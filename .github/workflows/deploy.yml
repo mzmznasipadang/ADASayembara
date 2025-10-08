@@ -36,7 +36,7 @@ jobs:
           # to load the wrong native binary on the Linux runner.
           # cache: 'npm'
 
-      - name: Install dependencies (try safe install, fallback if necessary)
+      - name: Clean and install dependencies (force fresh install)
         run: |
           echo "Runner platform: $(uname -a)"
           node -v || true
@@ -44,22 +44,33 @@ jobs:
           # Ensure npm cache is clean to avoid stale/native artifacts
           npm cache clean --force || true
 
-          # Try a reproducible install first. If npm ci fails (npm optional
-          # deps bug with native artifacts), fall back to removing
-          # package-lock.json and node_modules and run npm install.
-          if npm ci; then
-            echo "npm ci succeeded"
-          else
-            echo "npm ci failed — removing package-lock.json and node_modules and retrying with npm install"
-            rm -rf node_modules package-lock.json
-            npm install
-          fi
+          # Remove any potentially platform-specific lockfile/node_modules
+          rm -rf node_modules package-lock.json
+
+          # Perform a fresh install so optional native packages for the
+          # runner platform are fetched correctly.
+          npm install
+
+          # Quick check: list rollup platform packages (for debugging)
+          ls -la node_modules/@rollup || true
+
+      - name: Show build-time env and node info
+        run: |
+          echo "VITE_SUPABASE_URL=${VITE_SUPABASE_URL:-<not set>}"
+          echo "VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY:-<not set>}"
+          node -v
+          npm -v
 
       - name: Build
         env:
+          # keep compatibility secrets
           REACT_APP_SUPABASE_URL: ${{ secrets.REACT_APP_SUPABASE_URL }}
           REACT_APP_SUPABASE_ANON_KEY: ${{ secrets.REACT_APP_SUPABASE_ANON_KEY }}
           REACT_APP_ADMIN_PASSWORD: ${{ secrets.REACT_APP_ADMIN_PASSWORD }}
+          # expose Vite-prefixed env vars for use in import.meta.env
+          VITE_SUPABASE_URL: ${{ secrets.REACT_APP_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.REACT_APP_SUPABASE_ANON_KEY }}
+          VITE_ADMIN_PASSWORD: ${{ secrets.REACT_APP_ADMIN_PASSWORD }}
         run: npm run build
 
       - name: Setup Pages
