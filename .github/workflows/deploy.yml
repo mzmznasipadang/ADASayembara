@@ -30,7 +30,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
+          # Do not use the npm cache here. Restoring cached platform-specific
+          # native artifacts (from macOS/dev machine) can cause Rollup to try
+          # to load the wrong native binary on the Linux runner.
+          # cache: 'npm'
+
+      - name: Clean npm cache (avoid platform-mismatched artifacts)
+        run: npm cache clean --force
 
       - name: Install dependencies
         run: npm ci
