@@ -1,9 +1,9 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import App from './Home-production.jsx';
+import QueueSystem from './src/QueueSystem.jsx';
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <App />
+    <QueueSystem />
   </React.StrictMode>
 );
