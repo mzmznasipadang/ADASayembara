@@ -7,20 +7,26 @@ import { createClient } from '@supabase/supabase-js';
 // ============================================================================
 const SUPABASE_URL = process.env.REACT_APP_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.REACT_APP_SUPABASE_ANON_KEY || '';
-const ADMIN_PASSWORD = process.env.REACT_APP_ADMIN_PASSWORD || '';
+const ADMIN_PASSWORD = process.env.REACT_APP_ADMIN_PASSWORD || 'admin123';
 
-// Initialize Supabase client with proper configuration
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-  },
-  realtime: {
-    params: {
-      eventsPerSecond: 10,
-    },
-  },
-});
+// Check if Supabase is configured
+const isSupabaseConfigured = SUPABASE_URL && SUPABASE_ANON_KEY &&
+                             SUPABASE_URL.startsWith('https://');
+
+// Initialize Supabase client with proper configuration (only if configured)
+const supabase = isSupabaseConfigured
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+      },
+      realtime: {
+        params: {
+          eventsPerSecond: 10,
+        },
+      },
+    })
+  : null;
 
 // ============================================================================
 // ISSUE 2: ERROR BOUNDARY COMPONENT
@@ -216,9 +222,7 @@ function QueueSystem() {
     }
   }, []);
 
-  // Check if Supabase is configured
-  const isSupabaseConfigured = SUPABASE_URL && SUPABASE_ANON_KEY &&
-                               SUPABASE_URL !== '' && SUPABASE_ANON_KEY !== '';
+  // Supabase configuration check is done at module level
 
   // ============================================================================
   // ISSUE 4: REALTIME SUBSCRIPTIONS (replacing polling)
@@ -246,51 +250,53 @@ function QueueSystem() {
     initializeData();
 
     // Subscribe to queue_entries changes
-    channelRef.current = supabase
-      .channel('queue_entries_channel')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'queue_entries',
-        },
-        (payload) => {
-          console.log('Queue change received:', payload);
-          loadQueueData();
-        }
-      )
-      .subscribe((status) => {
-        console.log('Queue subscription status:', status);
-        setIsConnected(status === 'SUBSCRIBED');
-      });
-
-    // Subscribe to system_state changes
-    stateChannelRef.current = supabase
-      .channel('system_state_channel')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'system_state',
-        },
-        (payload) => {
-          console.log('System state change received:', payload);
-          if (payload.new?.current_queue) {
-            setCurrentQueue(payload.new.current_queue);
+    if (supabase) {
+      channelRef.current = supabase
+        .channel('queue_entries_channel')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'queue_entries',
+          },
+          (payload) => {
+            console.log('Queue change received:', payload);
+            loadQueueData();
           }
-        }
-      )
-      .subscribe((status) => {
-        console.log('State subscription status:', status);
-      });
+        )
+        .subscribe((status) => {
+          console.log('Queue subscription status:', status);
+          setIsConnected(status === 'SUBSCRIBED');
+        });
+
+      // Subscribe to system_state changes
+      stateChannelRef.current = supabase
+        .channel('system_state_channel')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'system_state',
+          },
+          (payload) => {
+            console.log('System state change received:', payload);
+            if (payload.new?.current_queue) {
+              setCurrentQueue(payload.new.current_queue);
+            }
+          }
+        )
+        .subscribe((status) => {
+          console.log('State subscription status:', status);
+        });
+    }
 
     return () => {
-      if (channelRef.current) {
+      if (supabase && channelRef.current) {
         supabase.removeChannel(channelRef.current);
       }
-      if (stateChannelRef.current) {
+      if (supabase && stateChannelRef.current) {
         supabase.removeChannel(stateChannelRef.current);
       }
     };
@@ -300,6 +306,7 @@ function QueueSystem() {
   // DATABASE OPERATIONS WITH ERROR HANDLING
   // ============================================================================
   const loadQueueData = async () => {
+    if (!supabase) return;
     try {
       const { data, error } = await supabase
         .from('queue_entries')
@@ -317,6 +324,7 @@ function QueueSystem() {
   };
 
   const loadSystemState = async () => {
+    if (!supabase) return;
     try {
       const { data, error } = await supabase
         .from('system_state')
@@ -337,6 +345,7 @@ function QueueSystem() {
   };
 
   const updateSystemState = async (newQueue) => {
+    if (!supabase) return;
     try {
       const { error } = await supabase
         .from('system_state')
