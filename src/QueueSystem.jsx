@@ -177,26 +177,38 @@ export default function QueueSystem() {
     const ctx = audioContextRef.current;
     const baseFreq = 600; // slower (lower pitch)
     const duration = 0.6; // length of each beep (seconds)
-    const gap = 0.25; // gap between beeps
+    const gap = 0.30; // gap between beeps
+    const count = 3; // number of immediate beeps
 
-    for (let i = 0; i < 3; i++) {
-      const oscillator = ctx.createOscillator();
-      const gainNode = ctx.createGain();
-      oscillator.type = 'sine';
-      oscillator.frequency.value = baseFreq;
-      oscillator.connect(gainNode);
-      gainNode.connect(ctx.destination);
+    const playSequence = () => {
+      if (!soundEnabled || !ctx) return;
+      for (let i = 0; i < count; i++) {
+        const oscillator = ctx.createOscillator();
+        const gainNode = ctx.createGain();
+        oscillator.type = 'sine';
+        oscillator.frequency.value = baseFreq;
+        oscillator.connect(gainNode);
+        gainNode.connect(ctx.destination);
 
-      const startTime = ctx.currentTime + i * (duration + gap);
-      const stopTime = startTime + duration;
+        const startTime = ctx.currentTime + i * (duration + gap);
+        const stopTime = startTime + duration;
 
-      gainNode.gain.setValueAtTime(0.001, startTime);
-      gainNode.gain.linearRampToValueAtTime(0.3, startTime + 0.05);
-      gainNode.gain.exponentialRampToValueAtTime(0.001, stopTime);
+        gainNode.gain.setValueAtTime(0.001, startTime);
+        gainNode.gain.linearRampToValueAtTime(0.3, startTime + 0.05);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, stopTime);
 
-      oscillator.start(startTime);
-      oscillator.stop(stopTime + 0.01);
-    }
+        oscillator.start(startTime);
+        oscillator.stop(stopTime + 0.01);
+      }
+    };
+
+    // Play immediate sequence
+    playSequence();
+
+    // Schedule one additional repeat after 10 seconds (10000 ms)
+    setTimeout(() => {
+      try { playSequence(); } catch (e) { console.error('Error replaying notification sound', e); }
+    }, 10000);
   };
 
   // Send browser notification
