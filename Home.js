@@ -538,7 +538,7 @@ export default function QueueSystem() {
         {/* Event Info */}
         <div className="text-center mt-6 text-blue-200 text-sm pb-4">
           <p>Registration: HTM 15k</p>
-          <p className="mt-1">Contact: Ilsa (SGA), Victor & Ashraf</p>
+          <p className="mt-1">Contact: Ilsa (SGA), Victor & Ashraf (THE Brewers)</p>
         </div>
       </div>
     </div>
