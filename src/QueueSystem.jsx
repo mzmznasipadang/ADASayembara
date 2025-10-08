@@ -331,7 +331,17 @@ export default function QueueSystem() {
   };
 
   const generateQRCode = () => {
-    return `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(window.location.href)}`;
+    const prodBase = 'https://mzmznasipadang.github.io/ADASayembara/';
+    let target = window.location.href;
+    try {
+      const h = window.location.hostname;
+      if (!h || h === 'localhost' || h.startsWith('127.') || h === '::1') {
+        target = prodBase;
+      }
+    } catch (e) {
+      target = prodBase;
+    }
+    return `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(target)}`;
   };
 
   const queueStatus = getQueueStatus();
