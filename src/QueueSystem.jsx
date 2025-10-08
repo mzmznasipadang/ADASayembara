@@ -14,6 +14,48 @@ export default function QueueSystem() {
   const [userTicket, setUserTicket] = useState(null);
   const [userName, setUserName] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  const ADMIN_STORAGE_KEY = 'ada_admin_authenticated_v1';
+  const ADMIN_ID_KEY = 'ada_admin_id_v1';
+
+  // Restore admin auth from localStorage on mount
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(ADMIN_STORAGE_KEY);
+      const storedId = localStorage.getItem(ADMIN_ID_KEY);
+      if (stored === '1' && storedId) {
+        // validate that admin id still exists in the DB
+        (async () => {
+          try {
+            // Try to get the currently authenticated user from Supabase
+            const { data: userData, error: userErr } = await supabase.auth.getUser();
+            const user = userData?.user || null;
+            if (user) {
+              // Verify that this auth user is registered as admin (match by auth_uid)
+              const { data: adminRow, error: adminErr } = await supabase.from('admin_users').select('id, username, auth_uid').eq('auth_uid', user.id).limit(1);
+              if (!adminErr && adminRow && adminRow.length > 0) {
+                setIsAdmin(true);
+                setIsAdminAuthenticated(true);
+                try { localStorage.setItem(ADMIN_STORAGE_KEY, '1'); localStorage.setItem(ADMIN_ID_KEY, adminRow[0].id); } catch (e) {}
+              } else {
+                // Not an admin — clear persisted state
+                localStorage.removeItem(ADMIN_STORAGE_KEY);
+                localStorage.removeItem(ADMIN_ID_KEY);
+              }
+            } else {
+              // No active session — clear persisted state to avoid stale flag
+              localStorage.removeItem(ADMIN_STORAGE_KEY);
+              localStorage.removeItem(ADMIN_ID_KEY);
+            }
+          } catch (e) {
+            // ignore
+          }
+        })();
+      }
+    } catch (e) {
+      // ignore
+    }
+  }, []);
   const [showQR, setShowQR] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
@@ -116,25 +158,45 @@ export default function QueueSystem() {
     }
   };
 
+  // Toggle sound and ensure audio context is resumed on user gesture
+  const toggleSound = async () => {
+    const next = !soundEnabled;
+    setSoundEnabled(next);
+    if (next && audioContextRef.current && audioContextRef.current.state === 'suspended') {
+      try {
+        await audioContextRef.current.resume();
+      } catch (e) {
+        // ignore
+      }
+    }
+  };
+
   // Play notification sound
   const playNotificationSound = () => {
     if (!soundEnabled || !audioContextRef.current) return;
-    
     const ctx = audioContextRef.current;
-    const oscillator = ctx.createOscillator();
-    const gainNode = ctx.createGain();
-    
-    oscillator.connect(gainNode);
-    gainNode.connect(ctx.destination);
-    
-    oscillator.frequency.value = 800;
-    oscillator.type = 'sine';
-    
-    gainNode.gain.setValueAtTime(0.3, ctx.currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
-    
-    oscillator.start(ctx.currentTime);
-    oscillator.stop(ctx.currentTime + 0.5);
+    const baseFreq = 600; // slower (lower pitch)
+    const duration = 0.6; // length of each beep (seconds)
+    const gap = 0.25; // gap between beeps
+
+    for (let i = 0; i < 3; i++) {
+      const oscillator = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.value = baseFreq;
+      oscillator.connect(gainNode);
+      gainNode.connect(ctx.destination);
+
+      const startTime = ctx.currentTime + i * (duration + gap);
+      const stopTime = startTime + duration;
+
+      gainNode.gain.setValueAtTime(0.001, startTime);
+      gainNode.gain.linearRampToValueAtTime(0.3, startTime + 0.05);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, stopTime);
+
+      oscillator.start(startTime);
+      oscillator.stop(stopTime + 0.01);
+    }
   };
 
   // Send browser notification
@@ -308,7 +370,7 @@ export default function QueueSystem() {
           </div>
           <div className="flex gap-4">
             <button
-              onClick={() => setSoundEnabled(!soundEnabled)}
+              onClick={toggleSound}
               className="flex items-center gap-2 text-white hover:text-blue-200 transition-colors"
               title={soundEnabled ? 'Sound On' : 'Sound Off'}
             >
@@ -415,14 +477,81 @@ export default function QueueSystem() {
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-bold text-gray-900">Admin Controls</h3>
             <button
-              onClick={() => setIsAdmin(!isAdmin)}
+              onClick={async () => {
+                if (!isAdmin) {
+                  // Use Supabase Auth to sign in, then verify admin membership via admin_users table
+                  const email = prompt('Admin email:');
+                  const pw = prompt('Admin password:');
+                  if (!email || !pw) return;
+                  try {
+                    // Sign in with Supabase Auth
+                    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({ email, password: pw });
+                    if (authError) {
+                      console.error('supabase.auth.signInWithPassword error', authError);
+                      alert(`Auth error: ${authError.message || authError.toString()}`);
+                      return;
+                    }
+
+                    // At this point the user should be authenticated. Inspect returned data.
+                    console.debug('signInWithPassword data:', authData);
+                    const user = authData?.user || null;
+                    const session = authData?.session || null;
+
+                    if (!user) {
+                      // Defensive: sign out if no user
+                      try { await supabase.auth.signOut(); } catch (e) {}
+                      alert('Signed in but no user session found. Check console for details.');
+                      return;
+                    }
+
+                    console.debug('Authenticated user id:', user.id);
+                    console.debug('Session:', session);
+
+                    // Query admin_users by auth_uid (strong binding)
+                    const { data: adminRows, error: adminError } = await supabase.from('admin_users').select('id, username, auth_uid').eq('auth_uid', user.id).limit(1);
+                    if (adminError) {
+                      console.error('admin_users query error', adminError);
+                      // This may be caused by RLS blocking the select. Hint: ensure the RLS policy allows auth.uid() = auth_uid
+                      alert(`Admin lookup error: ${adminError.message || adminError.toString()}. If RLS is enabled, ensure the policy allows this read for the signed-in user.`);
+                      try { await supabase.auth.signOut(); } catch (e) {}
+                      return;
+                    }
+
+                    console.debug('adminRows:', adminRows);
+                    if (adminRows && adminRows.length > 0) {
+                      const admin = adminRows[0];
+                      setIsAdmin(true);
+                      setIsAdminAuthenticated(true);
+                      try {
+                        localStorage.setItem(ADMIN_STORAGE_KEY, '1');
+                        localStorage.setItem(ADMIN_ID_KEY, admin.id);
+                      } catch (e) {}
+                    } else {
+                      // Not an admin: sign out to avoid leaving an authenticated session
+                      try { await supabase.auth.signOut(); } catch (e) {}
+                      alert(`Signed in as ${email} (uid=${user.id}) but no admin_users row found for that auth UID.`);
+                    }
+                  } catch (e) {
+                    console.error('Admin login error', e);
+                    alert(`Admin login failed: ${e?.message || e}`);
+                  }
+                } else {
+                  // Sign out admin
+                  try {
+                    await supabase.auth.signOut();
+                  } catch (e) {}
+                  setIsAdmin(false);
+                  setIsAdminAuthenticated(false);
+                  try { localStorage.removeItem(ADMIN_STORAGE_KEY); localStorage.removeItem(ADMIN_ID_KEY); } catch (e) {}
+                }
+              }}
               className="text-sm text-blue-600 hover:text-blue-800"
             >
               {isAdmin ? 'Hide' : 'Show'}
             </button>
           </div>
           
-          {isAdmin && (
+          {isAdminAuthenticated && (
             <div className="space-y-3">
               <button
                 onClick={() => setShowQR(!showQR)}
@@ -457,6 +586,17 @@ export default function QueueSystem() {
                 className="w-full bg-red-600 text-white py-3 rounded-lg font-semibold hover:bg-red-700 transition-colors"
               >
                 Reset Queue
+              </button>
+
+              <button
+                onClick={() => {
+                  setIsAdmin(false);
+                  setIsAdminAuthenticated(false);
+                  try { localStorage.removeItem(ADMIN_STORAGE_KEY); } catch (e) {}
+                }}
+                className="w-full bg-gray-200 text-gray-800 py-2 rounded-lg font-medium hover:bg-gray-300 transition-colors"
+              >
+                Logout Admin
               </button>
 
               {/* Queue List */}

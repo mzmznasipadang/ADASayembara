@@ -5,7 +5,7 @@
   "private": true,
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
-    "lucide-react": "latest",
+  "lucide-react": "latest",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
