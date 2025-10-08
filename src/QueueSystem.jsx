@@ -227,7 +227,7 @@ export default function QueueSystem() {
   useEffect(() => {
     if (userTicket && currentQueue === userTicket && previousQueueRef.current !== currentQueue) {
       playNotificationSound();
-      sendNotification("It's your turn! Please proceed to the camera station.");
+      sendNotification("It's your turn! Please proceed to Ashraf for camera collection.");
     }
     previousQueueRef.current = currentQueue;
   }, [currentQueue, userTicket]);
