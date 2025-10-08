@@ -29,17 +29,31 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          # Vite requires Node >=20.19.0; use a compatible Node 20.x release
+          node-version: '20.19.0'
           # Do not use the npm cache here. Restoring cached platform-specific
           # native artifacts (from macOS/dev machine) can cause Rollup to try
           # to load the wrong native binary on the Linux runner.
           # cache: 'npm'
 
-      - name: Clean npm cache (avoid platform-mismatched artifacts)
-        run: npm cache clean --force
+      - name: Install dependencies (try safe install, fallback if necessary)
+        run: |
+          echo "Runner platform: $(uname -a)"
+          node -v || true
+          npm -v || true
+          # Ensure npm cache is clean to avoid stale/native artifacts
+          npm cache clean --force || true
 
-      - name: Install dependencies
-        run: npm ci
+          # Try a reproducible install first. If npm ci fails (npm optional
+          # deps bug with native artifacts), fall back to removing
+          # package-lock.json and node_modules and run npm install.
+          if npm ci; then
+            echo "npm ci succeeded"
+          else
+            echo "npm ci failed — removing package-lock.json and node_modules and retrying with npm install"
+            rm -rf node_modules package-lock.json
+            npm install
+          fi
 
       - name: Build
         env:
