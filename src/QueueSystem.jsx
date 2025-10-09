@@ -78,6 +78,28 @@ export default function QueueSystem() {
       // ignore
     }
   }, []);
+
+  // Reflect current notification permission on mount and watch for changes if Permissions API is available
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      if ('Notification' in window) {
+        setNotificationsEnabled(Notification.permission === 'granted');
+      }
+      if (navigator.permissions && navigator.permissions.query) {
+        navigator.permissions.query({ name: 'notifications' }).then((status) => {
+          // initial state already set above, but ensure sync
+          setNotificationsEnabled(status.state === 'granted');
+          // update when permission changes (some browsers support onchange)
+          status.onchange = () => setNotificationsEnabled(status.state === 'granted');
+        }).catch(() => {
+          // ignore permission query errors
+        });
+      }
+    } catch (e) {
+      // ignore
+    }
+  }, []);
   const [showQR, setShowQR] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
@@ -561,6 +583,10 @@ export default function QueueSystem() {
               <div className="text-5xl font-bold mb-3">
                 {userTicket.toString().padStart(3, '0')}
               </div>
+              {/* show saved email under the number for clarity */}
+              {userEmail && (
+                <p className="text-sm opacity-90 mb-2">{userEmail}</p>
+              )}
               {queueStatus === 'completed' && (
                 <div className="flex items-center justify-center gap-2">
                   <CheckCircle size={20} />
@@ -580,6 +606,16 @@ export default function QueueSystem() {
                   <p className="text-sm">{userTicket - currentQueue} people ahead</p>
                 </div>
               )}
+
+              {/* Clear saved ticket button (high contrast) */}
+              <div className="mt-6">
+                <button
+                  onClick={clearSavedTicket}
+                  className="bg-white/10 text-white px-4 py-2 rounded-lg font-semibold hover:bg-white/20"
+                >
+                  Clear my saved ticket
+                </button>
+              </div>
             </div>
           </div>
         )}
