@@ -13,10 +13,17 @@ export default function QueueSystem() {
   const [queueData, setQueueData] = useState([]);
   const [userTicket, setUserTicket] = useState(null);
   const [userName, setUserName] = useState('');
+  const [userEmail, setUserEmail] = useState('');
+  const [toastMessage, setToastMessage] = useState('');
+  const [undoAvailable, setUndoAvailable] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const ADMIN_STORAGE_KEY = 'ada_admin_authenticated_v1';
   const ADMIN_ID_KEY = 'ada_admin_id_v1';
+  const USER_TICKET_KEY = 'ada_user_ticket_v1';
+  const USER_EMAIL_KEY = 'ada_user_email_v1';
+  const lastClearedRef = useRef(null);
+  const undoTimerRef = useRef(null);
 
   // Restore admin auth from localStorage on mount
   useEffect(() => {
@@ -53,6 +60,21 @@ export default function QueueSystem() {
         })();
       }
     } catch (e) {
+      // ignore
+    }
+  }, []);
+
+  // Restore user's ticket/email from localStorage so the join form doesn't reappear after reload
+  useEffect(() => {
+    try {
+      const t = localStorage.getItem(USER_TICKET_KEY);
+      const e = localStorage.getItem(USER_EMAIL_KEY);
+      if (t) {
+        const n = Number(t);
+        if (!Number.isNaN(n)) setUserTicket(n);
+      }
+      if (e) setUserEmail(e);
+    } catch (err) {
       // ignore
     }
   }, []);
@@ -122,6 +144,8 @@ export default function QueueSystem() {
       setIsLoading(false);
     }
   };
+
+  // Email notifications are not sent from the client. The app only validates and stores email addresses.
 
   const loadSystemState = async () => {
     try {
@@ -228,35 +252,118 @@ export default function QueueSystem() {
     if (userTicket && currentQueue === userTicket && previousQueueRef.current !== currentQueue) {
       playNotificationSound();
       sendNotification("It's your turn! Please proceed to Ashraf for camera collection.");
+      // email stored at join; we do not send emails from the client.
     }
     previousQueueRef.current = currentQueue;
   }, [currentQueue, userTicket]);
 
+  // Clear persisted ticket when the queue has advanced past the user's ticket
+  useEffect(() => {
+    try {
+      if (userTicket && currentQueue && userTicket < currentQueue) {
+        localStorage.removeItem(USER_TICKET_KEY);
+        localStorage.removeItem(USER_EMAIL_KEY);
+        setUserTicket(null);
+      }
+    } catch (e) {
+      // ignore
+    }
+  }, [currentQueue]);
+
+  // Allow the user to clear their saved ticket manually
+  const clearSavedTicket = () => {
+    // Confirm with the user before clearing saved ticket
+    try {
+      if (!confirm('Clear your saved ticket? This will remove the ticket saved in this browser.')) return;
+    } catch (e) {
+      // If confirm isn't available, proceed
+    }
+
+    // Save last cleared value so user can undo
+    try {
+      lastClearedRef.current = { ticket: userTicket, email: userEmail };
+    } catch (e) {
+      lastClearedRef.current = null;
+    }
+
+    try {
+      localStorage.removeItem(USER_TICKET_KEY);
+      localStorage.removeItem(USER_EMAIL_KEY);
+    } catch (e) {
+      // ignore
+    }
+    setUserTicket(null);
+    setUserEmail('');
+    try { setToastMessage('Saved ticket cleared'); } catch (e) {}
+    setUndoAvailable(true);
+    // allow undo for 8 seconds
+    try { clearTimeout(undoTimerRef.current); } catch (e) {}
+    undoTimerRef.current = setTimeout(() => {
+      setUndoAvailable(false);
+      setToastMessage('');
+      lastClearedRef.current = null;
+    }, 8000);
+  };
+
   const joinQueue = async () => {
     if (!userName.trim()) return;
+    if (!userEmail || !userEmail.includes('@')) { alert('Please enter a valid email'); return; }
 
     const newTicket = queueData.length + 1;
     const newEntry = {
       ticket: newTicket,
       name: userName.trim(),
+      email: userEmail.trim().toLowerCase(),
       status: 'waiting',
       created_at: new Date().toISOString()
     };
 
-    try {
-      if (isSupabaseConfigured) {
-        const { error } = await supabase.from('queue_entries').insert(newEntry);
-        if (error) throw error;
-        await loadQueueData();
-      } else {
-        setQueueData([...queueData, newEntry]);
+    if (isSupabaseConfigured) {
+      try {
+        const { data: inserted, error } = await supabase.from('queue_entries').insert(newEntry).select('*').maybeSingle();
+        if (error) {
+          // unique constraint on email will surface as a duplicate-key error from Postgres
+          if (error?.code === '23505' || (error?.message && error.message.toLowerCase().includes('duplicate'))) {
+            alert('An entry with this email already exists. Only one submission per email is allowed.');
+            return;
+          }
+          throw error;
+        }
+
+        // Consider the insert successful: set ticket, persist to localStorage, and clear input before attempting refresh.
+        const assignedTicket = inserted?.ticket ?? newTicket;
+        setUserTicket(assignedTicket);
+        try {
+          localStorage.setItem(USER_TICKET_KEY, String(assignedTicket));
+          localStorage.setItem(USER_EMAIL_KEY, newEntry.email);
+        } catch (e) {
+          // ignore storage errors
+        }
+        setUserName('');
+
+        // Refresh data but do not surface a refresh error to the user when insert already succeeded.
+        try {
+          await loadQueueData();
+        } catch (e) {
+          console.warn('Warning: failed to refresh queue data after insert (non-fatal):', e);
+          // Show subtle toast so user knows the row was saved locally/server-side
+          try { setToastMessage('Saved — updating list...'); } catch (ee) {}
+          // clear toast after a short time
+          setTimeout(() => setToastMessage(''), 4000);
+        }
+
+        return;
+      } catch (error) {
+        console.error('Error joining queue:', error);
+        alert('Failed to join queue. Please try again.');
+        return;
       }
-      setUserTicket(newTicket);
-      setUserName('');
-    } catch (error) {
-      console.error('Error joining queue:', error);
-      alert('Failed to join queue. Please try again.');
     }
+
+    // Demo mode (no Supabase)
+    setQueueData([...queueData, newEntry]);
+    setUserTicket(newTicket);
+    setUserName('');
   };
 
   const nextQueue = async () => {
@@ -359,6 +466,11 @@ export default function QueueSystem() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-900 via-blue-800 to-blue-900 p-4">
+      {/* Inline styles for toast animation (keeps everything self-contained) */}
+      <style>{`
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in-up { animation: fadeInUp 260ms ease-out both; }
+      `}</style>
       <div className="max-w-md mx-auto">
         {/* Header */}
         <div className="text-center mb-6 pt-4">
@@ -481,6 +593,14 @@ export default function QueueSystem() {
               placeholder="Enter your name"
               value={userName}
               onChange={(e) => setUserName(e.target.value)}
+              className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg mb-3 focus:outline-none focus:border-blue-600"
+              onKeyPress={(e) => e.key === 'Enter' && joinQueue()}
+            />
+            <input
+              type="email"
+              placeholder="Enter your email (for validation only)"
+              value={userEmail}
+              onChange={(e) => setUserEmail(e.target.value)}
               className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg mb-3 focus:outline-none focus:border-blue-600"
               onKeyPress={(e) => e.key === 'Enter' && joinQueue()}
             />
@@ -654,9 +774,40 @@ export default function QueueSystem() {
         {/* Event Info */}
         <div className="text-center mt-6 text-blue-200 text-sm pb-4">
           <p>Registration: HTM 15k</p>
-          <p className="mt-1">Contact: Ilsa (SGA), Victor & Ashraf (The Brewers)</p>
+          <p className="mt-1">Contact:Victor & Ashraf (The Brewers)</p>
         </div>
       </div>
+      {/* Toast (bottom-right) with optional Undo */}
+      {toastMessage && (
+        <div className="fixed bottom-6 right-6 z-50">
+          <div className="bg-black/80 text-white px-4 py-2 rounded-lg shadow-lg animate-fade-in-up flex items-center gap-3">
+            <p className="text-sm">{toastMessage}</p>
+            {undoAvailable && (
+              <button
+                onClick={() => {
+                  try {
+                    const last = lastClearedRef.current;
+                    if (last && last.ticket) {
+                      setUserTicket(last.ticket);
+                      setUserEmail(last.email || '');
+                      try { localStorage.setItem(USER_TICKET_KEY, String(last.ticket)); } catch (e) {}
+                      try { if (last.email) localStorage.setItem(USER_EMAIL_KEY, last.email); } catch (e) {}
+                    }
+                  } catch (e) {}
+                  setToastMessage('Restored saved ticket');
+                  setUndoAvailable(false);
+                  try { clearTimeout(undoTimerRef.current); } catch (e) {}
+                  lastClearedRef.current = null;
+                  setTimeout(() => setToastMessage(''), 2500);
+                }}
+                className="text-sm underline text-blue-200 hover:text-white"
+              >
+                Undo
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

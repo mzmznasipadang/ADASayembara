@@ -209,3 +209,5 @@ If deployment fails, check:
 - Browser console for runtime errors
 
 For further help, open an issue in the repository.
+
+Note: The example Edge Functions for sending email (under `functions/send-email` and `functions/send-email-smtp`) have been removed from this repository. If you need server-side email later, re-add them securely and store credentials in secrets.
