@@ -500,9 +500,9 @@ export default function QueueSystem() {
           <h1 className="text-3xl font-bold text-white mb-1">#ADASayembara</h1>
           <div className="flex items-center justify-center gap-2 text-white">
             <Camera size={24} />
-            <h2 className="text-2xl font-semibold">Shoot & Win</h2>
+            <h2 className="text-2xl font-medium">Shoot & Win</h2>
           </div>
-          <p className="text-blue-200 text-sm mt-2">MDL-9 Queue System</p>
+          <p className="text-blue-200 text-sm mt-2">Queue System</p>
         </div>
 
         {/* Connection Status & Settings Bar */}
@@ -810,7 +810,7 @@ export default function QueueSystem() {
         {/* Event Info */}
         <div className="text-center mt-6 text-blue-200 text-sm pb-4">
           <p>Registration: HTM 15k</p>
-          <p className="mt-1">Contact:Victor & Ashraf (The Brewers)</p>
+          <p className="mt-1">Contact: Victor & Ashraf (The Brewers)</p>
         </div>
       </div>
       {/* Toast (bottom-right) with optional Undo */}
