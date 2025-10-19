@@ -29,28 +29,19 @@ export default function QueueSystem() {
   useEffect(() => {
     try {
       const stored = localStorage.getItem(ADMIN_STORAGE_KEY);
-      const storedId = localStorage.getItem(ADMIN_ID_KEY);
-      if (stored === '1' && storedId) {
-        // validate that admin id still exists in the DB
+      if (stored === '1') {
+        // Validate that admin session still exists
         (async () => {
           try {
-            // Try to get the currently authenticated user from Supabase
             const { data: userData, error: userErr } = await supabase.auth.getUser();
             const user = userData?.user || null;
             if (user) {
-              // Verify that this auth user is registered as admin (match by auth_uid)
-              const { data: adminRow, error: adminErr } = await supabase.from('admin_users').select('id, username, auth_uid').eq('auth_uid', user.id).limit(1);
-              if (!adminErr && adminRow && adminRow.length > 0) {
-                setIsAdmin(true);
-                setIsAdminAuthenticated(true);
-                try { localStorage.setItem(ADMIN_STORAGE_KEY, '1'); localStorage.setItem(ADMIN_ID_KEY, adminRow[0].id); } catch (e) {}
-              } else {
-                // Not an admin — clear persisted state
-                localStorage.removeItem(ADMIN_STORAGE_KEY);
-                localStorage.removeItem(ADMIN_ID_KEY);
-              }
+              // User is authenticated with Supabase Auth
+              setIsAdmin(true);
+              setIsAdminAuthenticated(true);
+              try { localStorage.setItem(ADMIN_STORAGE_KEY, '1'); } catch (e) {}
             } else {
-              // No active session — clear persisted state to avoid stale flag
+              // No active session — clear persisted state
               localStorage.removeItem(ADMIN_STORAGE_KEY);
               localStorage.removeItem(ADMIN_ID_KEY);
             }
@@ -137,8 +128,8 @@ export default function QueueSystem() {
       .subscribe();
 
     const sSub = supabase
-      .channel('public:system_state')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'system_state' }, payload => {
+      .channel('public:system_config')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'system_config' }, payload => {
         loadSystemState();
       })
       .subscribe();
@@ -172,12 +163,13 @@ export default function QueueSystem() {
   const loadSystemState = async () => {
     try {
       const { data, error } = await supabase
-        .from('system_state')
+        .from('system_config')
         .select('*')
+        .eq('key', 'current_queue_number')
         .limit(1);
       if (error) throw error;
       if (data && data.length > 0) {
-        setCurrentQueue(data[0].current_queue);
+        setCurrentQueue(parseInt(data[0].value) || 0);
       }
     } catch (error) {
       console.error('Error loading system state:', error);
@@ -187,9 +179,9 @@ export default function QueueSystem() {
   const updateSystemState = async (newQueue) => {
     try {
       const { error } = await supabase
-        .from('system_state')
-        .update({ current_queue: newQueue })
-        .eq('id', 1);
+        .from('system_config')
+        .update({ value: String(newQueue) })
+        .eq('key', 'current_queue_number');
       if (error) throw error;
     } catch (error) {
       console.error('Error updating system state:', error);
@@ -331,20 +323,50 @@ export default function QueueSystem() {
     if (!userName.trim()) return;
     if (!userEmail || !userEmail.includes('@')) { alert('Please enter a valid email'); return; }
 
-    const newTicket = queueData.length + 1;
-    const newEntry = {
-      ticket: newTicket,
-      name: userName.trim(),
-      email: userEmail.trim().toLowerCase(),
-      status: 'waiting',
-      created_at: new Date().toISOString()
-    };
-
     if (isSupabaseConfigured) {
       try {
-        const { data: inserted, error } = await supabase.from('queue_entries').insert(newEntry).select('*').maybeSingle();
+        // Check if email already exists first (for better UX)
+        const { data: existing, error: checkError } = await supabase
+          .from('queue_entries')
+          .select('ticket')
+          .eq('email', userEmail.trim().toLowerCase())
+          .maybeSingle();
+
+        if (checkError && checkError.code !== 'PGRST116') {
+          // PGRST116 = no rows returned, which is fine
+          throw checkError;
+        }
+
+        if (existing) {
+          // Email already exists - show the existing ticket
+          alert(`This email is already in the queue with ticket #${existing.ticket}. You can only join once per email.`);
+          setUserTicket(existing.ticket);
+          try {
+            localStorage.setItem(USER_TICKET_KEY, String(existing.ticket));
+            localStorage.setItem(USER_EMAIL_KEY, userEmail.trim().toLowerCase());
+          } catch (e) {
+            // ignore storage errors
+          }
+          setUserName('');
+          return;
+        }
+
+        // Email is new - create entry (ticket will be auto-assigned by database trigger)
+        const newEntry = {
+          name: userName.trim(),
+          email: userEmail.trim().toLowerCase(),
+          platform: 'web',
+          status: 'waiting'
+        };
+
+        const { data: inserted, error } = await supabase
+          .from('queue_entries')
+          .insert(newEntry)
+          .select('*')
+          .maybeSingle();
+
         if (error) {
-          // unique constraint on email will surface as a duplicate-key error from Postgres
+          // Handle unique constraint violation as backup
           if (error?.code === '23505' || (error?.message && error.message.toLowerCase().includes('duplicate'))) {
             alert('An entry with this email already exists. Only one submission per email is allowed.');
             return;
@@ -352,25 +374,25 @@ export default function QueueSystem() {
           throw error;
         }
 
-        // Consider the insert successful: set ticket, persist to localStorage, and clear input before attempting refresh.
-        const assignedTicket = inserted?.ticket ?? newTicket;
-        setUserTicket(assignedTicket);
-        try {
-          localStorage.setItem(USER_TICKET_KEY, String(assignedTicket));
-          localStorage.setItem(USER_EMAIL_KEY, newEntry.email);
-        } catch (e) {
-          // ignore storage errors
+        // Consider the insert successful: set ticket, persist to localStorage, and clear input
+        const assignedTicket = inserted?.ticket;
+        if (assignedTicket) {
+          setUserTicket(assignedTicket);
+          try {
+            localStorage.setItem(USER_TICKET_KEY, String(assignedTicket));
+            localStorage.setItem(USER_EMAIL_KEY, newEntry.email);
+          } catch (e) {
+            // ignore storage errors
+          }
         }
         setUserName('');
 
-        // Refresh data but do not surface a refresh error to the user when insert already succeeded.
+        // Refresh data
         try {
           await loadQueueData();
         } catch (e) {
           console.warn('Warning: failed to refresh queue data after insert (non-fatal):', e);
-          // Show subtle toast so user knows the row was saved locally/server-side
           try { setToastMessage('Saved — updating list...'); } catch (ee) {}
-          // clear toast after a short time
           setTimeout(() => setToastMessage(''), 4000);
         }
 
@@ -383,6 +405,15 @@ export default function QueueSystem() {
     }
 
     // Demo mode (no Supabase)
+    const newTicket = queueData.length + 1;
+    const newEntry = {
+      ticket: newTicket,
+      name: userName.trim(),
+      email: userEmail.trim().toLowerCase(),
+      platform: 'web',
+      status: 'waiting',
+      created_at: new Date().toISOString()
+    };
     setQueueData([...queueData, newEntry]);
     setUserTicket(newTicket);
     setUserName('');
@@ -392,40 +423,32 @@ export default function QueueSystem() {
     if (currentQueue >= queueData.length) return;
 
     const nextNumber = currentQueue + 1;
-    
+
     try {
       if (isSupabaseConfigured) {
-        // Update current entry to completed
-        const currentEntry = queueData.find(item => item.ticket === currentQueue);
-        if (currentEntry) {
-          const { error } = await supabase.from('queue_entries').update({ status: 'completed' }).eq('id', currentEntry.id);
-          if (error) throw error;
-        }
-
-        // Update next entry to current
-        const nextEntry = queueData.find(item => item.ticket === nextNumber);
-        if (nextEntry) {
-          const { error } = await supabase.from('queue_entries').update({ status: 'current' }).eq('id', nextEntry.id);
-          if (error) throw error;
-        }
-
-        // Update system state
+        // Update system_config - triggers will handle status updates and FCM notification automatically
         await updateSystemState(nextNumber);
+
+        // Refresh queue data to see updated statuses
         await loadQueueData();
+
+        setCurrentQueue(nextNumber);
+        playNotificationSound();
       } else {
+        // Demo mode - manually update statuses
         const updatedQueue = queueData.map(item => {
-          if (item.ticket === currentQueue) {
+          if (item.ticket < nextNumber) {
             return { ...item, status: 'completed' };
           } else if (item.ticket === nextNumber) {
             return { ...item, status: 'current' };
+          } else {
+            return { ...item, status: 'waiting' };
           }
-          return item;
         });
         setQueueData(updatedQueue);
+        setCurrentQueue(nextNumber);
+        playNotificationSound();
       }
-      
-      setCurrentQueue(nextNumber);
-      playNotificationSound();
     } catch (error) {
       console.error('Error advancing queue:', error);
       alert('Failed to advance queue. Please try again.');
@@ -437,15 +460,28 @@ export default function QueueSystem() {
 
     try {
       if (isSupabaseConfigured) {
-  const { error } = await supabase.from('queue_entries').delete().gte('ticket', 0);
-  if (error) throw error;
-        await updateSystemState(1);
+        // Call the database function to reset the queue system
+        const { error } = await supabase.rpc('reset_queue_system');
+        if (error) throw error;
+
+        // Refresh data
         await loadQueueData();
+        await loadSystemState();
+
+        // Clear local storage
+        setUserTicket(null);
+        try {
+          localStorage.removeItem(USER_TICKET_KEY);
+          localStorage.removeItem(USER_EMAIL_KEY);
+        } catch (e) {
+          // ignore
+        }
       } else {
+        // Demo mode
         setQueueData([]);
+        setCurrentQueue(1);
+        setUserTicket(null);
       }
-      setCurrentQueue(1);
-      setUserTicket(null);
     } catch (error) {
       console.error('Error resetting queue:', error);
       alert('Failed to reset queue. Please try again.');
@@ -657,7 +693,7 @@ export default function QueueSystem() {
             <button
               onClick={async () => {
                 if (!isAdmin) {
-                  // Use Supabase Auth to sign in, then verify admin membership via admin_users table
+                  // Use Supabase Auth to sign in
                   const email = prompt('Admin email:');
                   const pw = prompt('Admin password:');
                   if (!email || !pw) return;
@@ -670,45 +706,20 @@ export default function QueueSystem() {
                       return;
                     }
 
-                    // At this point the user should be authenticated. Inspect returned data.
-                    console.debug('signInWithPassword data:', authData);
                     const user = authData?.user || null;
-                    const session = authData?.session || null;
-
                     if (!user) {
                       // Defensive: sign out if no user
                       try { await supabase.auth.signOut(); } catch (e) {}
-                      alert('Signed in but no user session found. Check console for details.');
+                      alert('Signed in but no user session found.');
                       return;
                     }
 
-                    console.debug('Authenticated user id:', user.id);
-                    console.debug('Session:', session);
-
-                    // Query admin_users by auth_uid (strong binding)
-                    const { data: adminRows, error: adminError } = await supabase.from('admin_users').select('id, username, auth_uid').eq('auth_uid', user.id).limit(1);
-                    if (adminError) {
-                      console.error('admin_users query error', adminError);
-                      // This may be caused by RLS blocking the select. Hint: ensure the RLS policy allows auth.uid() = auth_uid
-                      alert(`Admin lookup error: ${adminError.message || adminError.toString()}. If RLS is enabled, ensure the policy allows this read for the signed-in user.`);
-                      try { await supabase.auth.signOut(); } catch (e) {}
-                      return;
-                    }
-
-                    console.debug('adminRows:', adminRows);
-                    if (adminRows && adminRows.length > 0) {
-                      const admin = adminRows[0];
-                      setIsAdmin(true);
-                      setIsAdminAuthenticated(true);
-                      try {
-                        localStorage.setItem(ADMIN_STORAGE_KEY, '1');
-                        localStorage.setItem(ADMIN_ID_KEY, admin.id);
-                      } catch (e) {}
-                    } else {
-                      // Not an admin: sign out to avoid leaving an authenticated session
-                      try { await supabase.auth.signOut(); } catch (e) {}
-                      alert(`Signed in as ${email} (uid=${user.id}) but no admin_users row found for that auth UID.`);
-                    }
+                    // Successfully authenticated - grant admin access
+                    setIsAdmin(true);
+                    setIsAdminAuthenticated(true);
+                    try {
+                      localStorage.setItem(ADMIN_STORAGE_KEY, '1');
+                    } catch (e) {}
                   } catch (e) {
                     console.error('Admin login error', e);
                     alert(`Admin login failed: ${e?.message || e}`);
@@ -720,7 +731,10 @@ export default function QueueSystem() {
                   } catch (e) {}
                   setIsAdmin(false);
                   setIsAdminAuthenticated(false);
-                  try { localStorage.removeItem(ADMIN_STORAGE_KEY); localStorage.removeItem(ADMIN_ID_KEY); } catch (e) {}
+                  try {
+                    localStorage.removeItem(ADMIN_STORAGE_KEY);
+                    localStorage.removeItem(ADMIN_ID_KEY);
+                  } catch (e) {}
                 }
               }}
               className="text-sm text-blue-600 hover:text-blue-800"
